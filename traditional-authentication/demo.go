@@ -81,7 +81,6 @@ func printBanner() {
    _| |_| | | |  __/ ||  __/ |_| |  __/ | |_| | (_) | | | |
   |_____|_| |_|\___|\__\___|\__|_|\___|  \__|_|\___/|_| |_|
 
-    Traditional Auth Simulator - Hacker Mode
 ` + Reset)
 	fmt.Println(Yellow + "Type 'help' for commands. E.g. register, login, dump, attack, exit" + Reset)
 }
@@ -417,7 +416,7 @@ func attackerSaltExposure() {
 func attackerPasswordSpraying() {
     fmt.Println(Red + "\n[Attacker] Password Spraying Attack Started..." + Reset)
     users := loadUsers()
-    commonPasswords := []string{"123456", "password", "Password1", "qwerty", "admin"}
+    commonPasswords := []string{"123456", "man", "Password1", "qwerty", "admin"}
 
     for _, pwd := range commonPasswords {
         fmt.Printf(Cyan+"Trying common password '%s' on all users...\n"+Reset, pwd)
