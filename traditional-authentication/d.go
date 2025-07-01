@@ -3,6 +3,8 @@ package main
 import (
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -15,13 +17,16 @@ import (
 	"golang.org/x/crypto/hkdf"
 )
 
-// User credentials storage
-var userDB = map[string]struct {
-	oprfSecret []byte
-	envelope   []byte
-}{}
+type UserRecord struct {
+	Username    string
+	OPRFSecret  []byte
+	Envelope    []byte
+	ServerPrivKey *ecdsa.PrivateKey
+	ServerPubKey  *ecdsa.PublicKey
+}
 
-// Animate text with typewriter effect
+var ServerDatabase = make(map[string]UserRecord)
+
 func animate(msg string, speed time.Duration) {
 	for _, c := range msg {
 		fmt.Printf("%c", c)
@@ -30,7 +35,6 @@ func animate(msg string, speed time.Duration) {
 	fmt.Println()
 }
 
-// Visualize byte arrays with ellipsis
 func peek(data []byte) string {
 	if len(data) > 8 {
 		return hex.EncodeToString(data[:4]) + "..." + hex.EncodeToString(data[len(data)-4:])
@@ -38,58 +42,93 @@ func peek(data []byte) string {
 	return hex.EncodeToString(data)
 }
 
-/* Cryptography Functions */
+/* Key Generation Explanations */
+func explainOPRF() {
+	animate("\n🔍 OPRF Secret Generation:", 20)
+	animate("1. Server generates 32-byte random value", 10)
+	animate("2. Used as HMAC-SHA256 key for password blinding", 10)
+}
+
+func explainHKDF() {
+	animate("\n🔍 HKDF Key Derivation:", 20)
+	animate("1. Takes OPRF output as input key material", 10)
+	animate("2. Uses SHA-256 hash function", 10)
+	animate("3. Adds optional salt (nil here) and context info", 10)
+	animate("4. Outputs 32-byte AES encryption key", 10)
+}
+
+func explainEnvelope() {
+	animate("\n🔍 Envelope Creation:", 20)
+	animate("1. Client generates ephemeral private key", 10)
+	animate("2. Encrypts it using AES-GCM with derived key", 10)
+	animate("3. Includes 12-byte random nonce for GCM", 10)
+}
+
+func explainSessionKeys() {
+	animate("\n🔍 Session Key Establishment:", 20)
+	animate("1. Client and server perform ECDH key exchange", 10)
+	animate("2. Client uses decrypted private key", 10)
+	animate("3. Server uses long-term private key", 10)
+	animate("4. HKDF derives 3 keys from shared secret:", 10)
+	animate("   - Encryption key (32 bytes)", 10)
+	animate("   - MAC key (32 bytes)", 10)
+	animate("   - Initialization Vector (16 bytes)", 10)
+}
+
+/* Core Cryptographic Functions */
 func generateOPRFSecret() []byte {
+	explainOPRF()
 	secret := make([]byte, 32)
 	rand.Read(secret)
-	animate(fmt.Sprintf("🔐 Generated random OPRF secret: %s", peek(secret)), 20)
+	animate(fmt.Sprintf("✅ Generated: %s", peek(secret)), 20)
 	return secret
 }
 
 func computeOPRF(password, secret []byte) []byte {
-	animate("\n📝 Client computes OPRF:", 10)
-	animate(fmt.Sprintf("   Password: '%s'", password), 5)
-	animate(fmt.Sprintf("   Secret: %s", peek(secret)), 5)
+	animate("\n📝 Client OPRF Calculation:", 10)
+	animate(fmt.Sprintf("Inputs:\n- Password: '%s'\n- Secret: %s", password, peek(secret)), 5)
 
 	mac := hmac.New(sha256.New, secret)
 	mac.Write([]byte(password))
 	result := mac.Sum(nil)
 
-	animate(fmt.Sprintf("   HMAC-SHA256 output: %s", peek(result)), 15)
+	animate(fmt.Sprintf("HMAC-SHA256:\n- Key: %s\n- Data: '%s'\n- Output: %s", 
+		peek(secret), password, peek(result)), 15)
 	return result
 }
 
-func deriveEncKey(oprfOutput []byte) []byte {
-	animate("\n🔑 Key Derivation:", 10)
-	animate(fmt.Sprintf("   OPRF output: %s", peek(oprfOutput)), 5)
+func deriveKeys(ikm []byte, info string) []byte {
+	explainHKDF()
+	animate(fmt.Sprintf("Inputs:\n- IKM: %s\n- Info: '%s'", peek(ikm), info), 10)
 
-	hkdf := hkdf.New(sha256.New, oprfOutput, nil, []byte("OPAQUE-ENCRYPTION-KEY"))
+	hkdf := hkdf.New(sha256.New, ikm, nil, []byte(info))
 	key := make([]byte, 32)
 	io.ReadFull(hkdf, key)
 
-	animate(fmt.Sprintf("   HKDF-SHA256 output (AES key): %s", peek(key)), 15)
+	animate(fmt.Sprintf("HKDF Output (%s): %s", info, peek(key)), 15)
 	return key
 }
 
-func createEnvelope(privateKey, encKey []byte) []byte {
-	animate("\n✉️ Creating Envelope:", 10)
-	animate(fmt.Sprintf("   Private key: %s", peek(privateKey)), 5)
+func createEnvelope(data, key []byte) []byte {
+	explainEnvelope()
+	animate(fmt.Sprintf("Inputs:\n- Data: %s\n- Key: %s", peek(data), peek(key)), 10)
 
-	block, _ := aes.NewCipher(encKey)
+	block, _ := aes.NewCipher(key)
 	gcm, _ := cipher.NewGCM(block)
 	nonce := make([]byte, gcm.NonceSize())
 	rand.Read(nonce)
 
-	ciphertext := gcm.Seal(nonce, nonce, privateKey, nil)
-	animate(fmt.Sprintf("   AES-GCM encrypted: %s", peek(ciphertext)), 15)
+	ciphertext := gcm.Seal(nonce, nonce, data, nil)
+	animate(fmt.Sprintf("AES-GCM:\n- Nonce: %s\n- Ciphertext: %s", 
+		peek(nonce), peek(ciphertext[gcm.NonceSize():])), 15)
 	return ciphertext
 }
 
-func openEnvelope(envelope, encKey []byte) ([]byte, error) {
-	animate("\n📩 Opening Envelope:", 10)
-	animate(fmt.Sprintf("   Encrypted data: %s", peek(envelope)), 5)
+func openEnvelope(envelope, key []byte) ([]byte, error) {
+	animate("\n📩 Envelope Decryption:", 10)
+	animate(fmt.Sprintf("Inputs:\n- Envelope: %s\n- Key: %s", peek(envelope), peek(key)), 10)
 
-	block, _ := aes.NewCipher(encKey)
+	block, _ := aes.NewCipher(key)
 	gcm, _ := cipher.NewGCM(block)
 	nonceSize := gcm.NonceSize()
 
@@ -100,82 +139,111 @@ func openEnvelope(envelope, encKey []byte) ([]byte, error) {
 	nonce, ciphertext := envelope[:nonceSize], envelope[nonceSize:]
 	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
-		animate("❌ Decryption failed!", 10)
+		animate("❌ Failed: "+err.Error(), 10)
 		return nil, err
 	}
 
-	animate(fmt.Sprintf("   Decrypted private key: %s", peek(plaintext)), 15)
+	animate(fmt.Sprintf("✅ Decrypted: %s", peek(plaintext)), 15)
 	return plaintext, nil
+}
+
+func establishSession(clientPrivKey []byte, serverPrivKey *ecdsa.PrivateKey) ([]byte, []byte, []byte) {
+	explainSessionKeys()
+	
+	// Convert client private key to ECDSA
+	clientKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	clientKey.D.SetBytes(clientPrivKey)
+
+	// ECDH Key Exchange
+	animate("\n🤝 ECDH Key Exchange:", 10)
+	sharedX, _ := serverPrivKey.PublicKey.ScalarMult(
+		clientKey.PublicKey.X,
+		clientKey.PublicKey.Y,
+		serverPrivKey.D.Bytes(),
+	)
+	sharedSecret := sharedX.Bytes()
+	animate(fmt.Sprintf("Shared Secret: %s", peek(sharedSecret)), 15)
+
+	// Derive session keys
+	hkdf := hkdf.New(sha256.New, sharedSecret, nil, []byte("OPAQUE-SESSION-KEYS"))
+	encKey := make([]byte, 32)
+	macKey := make([]byte, 32)
+	iv := make([]byte, 16)
+	io.ReadFull(hkdf, encKey)
+	io.ReadFull(hkdf, macKey)
+	io.ReadFull(hkdf, iv)
+
+	animate("\n🔑 Derived Session Keys:", 10)
+	animate(fmt.Sprintf("Encryption Key: %s", peek(encKey)), 5)
+	animate(fmt.Sprintf("MAC Key: %s", peek(macKey)), 5)
+	animate(fmt.Sprintf("IV: %s", peek(iv)), 5)
+
+	return encKey, macKey, iv
 }
 
 /* Protocol Flow */
 func register(username, password string) {
 	animate("\n\n🌟 ===== REGISTRATION =====", 20)
-	animate(fmt.Sprintf("Registering user: %s", username), 10)
-
-	// Server setup
+	
+	// Server generates OPRF secret
 	oprfSecret := generateOPRFSecret()
 	
-	// Client computations
+	// Server generates long-term key pair
+	serverPrivKey, _ := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	serverPubKey := &serverPrivKey.PublicKey
+
+	// Client computes OPRF
 	oprfOutput := computeOPRF([]byte(password), oprfSecret)
 	
-	// Simulate client key generation
-	privateKey := make([]byte, 32)
-	rand.Read(privateKey)
-	animate(fmt.Sprintf("\n🗝️ Generated client private key: %s", peek(privateKey)), 15)
+	// Client generates ephemeral key pair
+	clientPrivKey := make([]byte, 32)
+	rand.Read(clientPrivKey)
+	animate(fmt.Sprintf("\n🗝️ Client Ephemeral Private Key: %s", peek(clientPrivKey)), 15)
 
 	// Create envelope
-	encKey := deriveEncKey(oprfOutput)
-	envelope := createEnvelope(privateKey, encKey)
+	encKey := deriveKeys(oprfOutput, "OPAQUE-ENCRYPTION-KEY")
+	envelope := createEnvelope(clientPrivKey, encKey)
 
 	// Server stores credentials
-	userDB[username] = struct {
-		oprfSecret []byte
-		envelope   []byte
-	}{oprfSecret, envelope}
-
-	animate("\n💾 Server stored:", 10)
-	animate(fmt.Sprintf("   OPRF secret: %s", peek(oprfSecret)), 5)
-	animate(fmt.Sprintf("   Envelope: %s", peek(envelope)), 5)
+	ServerDatabase[username] = UserRecord{
+		Username:    username,
+		OPRFSecret:  oprfSecret,
+		Envelope:    envelope,
+		ServerPrivKey: serverPrivKey,
+		ServerPubKey:  serverPubKey,
+	}
 }
 
 func login(username, password string) bool {
 	animate("\n\n🔑 ===== LOGIN =====", 20)
-	animate(fmt.Sprintf("Authenticating user: %s", username), 10)
 
-	// Retrieve user record
-	record, exists := userDB[username]
+	record, exists := ServerDatabase[username]
 	if !exists {
 		animate("❌ User not found!", 10)
 		return false
 	}
 
 	// Client recomputes OPRF
-	oprfOutput := computeOPRF([]byte(password), record.oprfSecret)
-
-	// Derive decryption key
-	encKey := deriveEncKey(oprfOutput)
+	oprfOutput := computeOPRF([]byte(password), record.OPRFSecret)
 
 	// Open envelope
-	privateKey, err := openEnvelope(record.envelope, encKey)
+	encKey := deriveKeys(oprfOutput, "OPAQUE-ENCRYPTION-KEY")
+	clientPrivKey, err := openEnvelope(record.Envelope, encKey)
 	if err != nil {
 		return false
 	}
 
-	animate(fmt.Sprintf("\n✅ Success! Retrieved private key: %s", peek(privateKey)), 20)
+	// Establish session
+	encKey, macKey, iv := establishSession(clientPrivKey, record.ServerPrivKey)
+
+	animate("\n🎉 Secure Session Established!", 20)
+	animate(fmt.Sprintf("Use these for secure communication:\n- Enc Key: %s\n- MAC Key: %s\n- IV: %s", 
+		peek(encKey), peek(macKey), peek(iv)), 10)
 	return true
 }
 
 func main() {
 	// Demo
 	register("alice", "correct_password")
-	register("bob", "password123")
-
-	// Successful login
-	animate("\n\n=== TEST 1: Correct Password ===", 20)
 	login("alice", "correct_password")
-
-	// Failed login
-	animate("\n\n=== TEST 2: Wrong Password ===", 20)
-	login("bob", "wrong_password")
 }
